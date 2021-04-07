@@ -1,9 +1,4 @@
 
-# coding: utf-8
-
-# In[1]:
-
-
 import os
 import argparse
 import math
@@ -15,22 +10,43 @@ import torch.utils.data as data_utils
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
-
+from torch.utils.tensorboard import SummaryWriter
+from sklearn import metrics
+from torchsummary import summary
 
 # In[3]:
+from set_transformer.models import SetTransformer
+
+
+def load_data2(data_path,max_length,vocab_size,batch_size=64):
+
+
+    return train_loader, test_loader,vocabulary, X_tst, Y_tst, X_trn,Y_trn
+
+
+# a custom collate function, so we can use variable sized inputs
+def my_collate(batch):
+    data = [item[0] for item in batch]
+    target = [item[1] for item in batch]
+    target = torch.LongTensor(target)
+    return [data, target]
 
 
 def load_data(data_path,max_length,vocab_size,batch_size=64):
     X_trn, Y_trn, X_tst, Y_tst, vocabulary, vocabulary_inv = data_helpers.load_data(data_path, max_length=max_length, vocab_size=vocab_size)
-    Y_trn = Y_trn[0:].toarray()
-    Y_trn=np.insert(Y_trn,101,0,axis=1)
-    Y_trn=np.insert(Y_trn,102,0,axis=1)
-    Y_tst = Y_tst[0:].toarray()
+    #Y_trn = Y_trn[0:].toarray()
+    # Y_trn=np.insert(Y_trn,18,0,axis=1)
+    # Y_trn=np.insert(Y_trn,19,0,axis=1)
+  #  Y_tst = Y_tst[0:].toarray()
+    Y_trn = np.array(Y_trn)
+    Y_tst = np.array(Y_tst)
 
+    print('step 1')
     train_data = data_utils.TensorDataset(torch.from_numpy( X_trn).type(torch.LongTensor),torch.from_numpy( Y_trn).type(torch.LongTensor))
     test_data = data_utils.TensorDataset(torch.from_numpy(X_tst).type(torch.LongTensor),torch.from_numpy(Y_tst).type(torch.LongTensor))
-    train_loader = data_utils.DataLoader(train_data, batch_size, drop_last=False, shuffle=True)
-    test_loader = data_utils.DataLoader(test_data, batch_size, drop_last=False)
+    print('step 2')
+    train_loader = data_utils.DataLoader(train_data, batch_size, collate_fn=my_collate,drop_last=False, shuffle=True)
+    test_loader = data_utils.DataLoader(test_data, batch_size,collate_fn=my_collate, drop_last=False)
     return train_loader, test_loader,vocabulary, X_tst, Y_tst, X_trn,Y_trn
 
 
@@ -38,7 +54,7 @@ def load_data(data_path,max_length,vocab_size,batch_size=64):
 
 
 #input data_path
-data_path='/data/rcv1_raw_text.p'
+data_path='data/rcv1_raw_text.p'
 sequence_length=500
 vocab_size=30000
 batch_size=64
@@ -81,7 +97,7 @@ pretrain='glove'
 embedding_dim=300
 if pretrain=='glove':
     #input word2vec file path
-    file_path=os.path.join('glove.6B','glove.6B.%dd.txt'%(embedding_dim))
+    file_path=os.path.join('data','glove.6B.%dd.txt'%(embedding_dim))
     embedding_weights = load_glove_embeddings(file_path,vocabulary,embedding_dim)
 
 
@@ -144,8 +160,11 @@ class Hybrid_XML(BasicModule):
         
         #shared for all attention component
         self.linear_final = torch.nn.Linear(2*self.hidden_size,self.hidden_size)
+        # self.linear_final = SetTransformer(2*self.hidden_size,18,self.hidden_size)
+
+
         self.output_layer=torch.nn.Linear(self.hidden_size,1)
-        
+
         label_embedding=torch.FloatTensor(self.num_labels,self.hidden_size)
         if label_emb is None:
             nn.init.xavier_normal_(label_embedding)
@@ -204,16 +223,18 @@ class Hybrid_XML(BasicModule):
 # In[10]:
 
 
-label_emb=np.zeros((103,256))
-with open('./label_embedding/rcv.emb','r') as f:
+label_emb=np.zeros((18,256))
+with open('rcv.emb', 'r') as f:
     for index,i in enumerate(f.readlines()):
         if index==0:
             continue
         i=i.rstrip('\n')
         n=i.split(' ')[0]
+        if int(n) >17:
+            continue
         content=i.split(' ')[1:]
         label_emb[int(n)]=[float(value) for value in content]
-        
+
 
 
     
@@ -242,8 +263,8 @@ if use_cuda:
 # In[14]:
 
 
-model=hybrid_xml(num_labels=103,vocab_size=30001,embedding_size=300,embedding_weights=embedding_weights,
-                max_seq=500,hidden_size=256,d_a=256,label_emb=label_emb)
+model=Hybrid_XML(num_labels=36,vocab_size=30001,embedding_size=300,embedding_weights=embedding_weights,
+                max_seq=500,hidden_size=256,d_a=256)#,label_emb=label_emb)
 # model.load('./rcv_log/rcv_9.pth')
 if use_cuda:
     model.cuda()
@@ -283,6 +304,22 @@ def precision_k(pred, label, k=[1, 3, 5]):
         precision.append(p*100/batch_size)
     
     return precision
+def calculate_scores(targets,outputs,ep,print_scores=False,mode='validate'):
+    # outputs =outputs.squeeze()
+    # targets = targets.squeeze() #TODO: replace this with loops when using multiple objects
+    average_precision = metrics.average_precision_score(targets, outputs, average='micro')
+    # f1_score_micro = metrics.f1_score(targets, outputs >= 0.5, average='micro')
+    # f1_score_macro = metrics.f1_score(targets, outputs >= 0.5, average='macro')
+    if print_scores :
+        print(f"Average_Precision Score = {average_precision}")
+        # print(f"F1 Score (Micro) = {f1_score_micro}")
+        # print(f"F1 Score (Macro) = {f1_score_macro}")
+    # writer.add_scalars('AP/'+mode+'' ,{str(current_split): average_precision}, epoch)
+    # writer.add_scalars('F1/'+mode+'' ,{str(current_split): f1_score_macro}, epoch)
+    # writer.add_scalars('F1micro/'+mode+'' ,{str(current_split): f1_score_micro}, epoch)
+    writer.add_scalar('AP/'+mode+'' , average_precision, ep)
+    # writer.add_scalar('F1/'+mode+'' , f1_score_macro, ep)
+    # writer.add_scalar('F1micro/'+mode+'' , f1_score_micro, ep)
 
 def ndcg_k(pred, label, k=[1, 3, 5]):
     batch_size = pred.shape[0]
@@ -314,11 +351,15 @@ epoch=15
 best_acc=0.0
 pre_acc=0.0
 
+writer = SummaryWriter()
 
 # if not os.path.isdir('./rcv_log'):
 #     os.makedirs('./rcv_log')
 # trace_file='./rcv_log/trace_rcv.txt'
 
+# visualize_x =  X_tst[:5]
+# visualize_y = Y_tst[:5]
+predictions =[]
 for ep in range(1,epoch+1): 
     train_loss=0
     print("----epoch: %2d---- "%ep)
@@ -328,8 +369,8 @@ for ep in range(1,epoch+1):
         
         data=data.cuda()
         labels=labels.cuda()
-        
-        pred=model(data,label_emb)
+
+        pred=model(data)
         loss=criterion(pred,labels.float())/pred.size(0)
         loss.backward()
         optimizer.step()
@@ -348,23 +389,29 @@ for ep in range(1,epoch+1):
         
         data=data.cuda()
         labels=labels.cuda()
-        pred=model(data,label_emb)
+        pred=model(data)
         loss=criterion(pred,labels.float())/pred.size(0)
 
         #计算metric
         labels_cpu=labels.data.cpu()
         pred_cpu=pred.data.cpu()
+        if i== 2:
+            if ep == 1:
+                predictions.append(labels_cpu.numpy())
+            predictions.append(pred_cpu.numpy())
 
-        _p1,_p3,_p5=precision_k(pred_cpu.topk(k=5)[1].numpy(), labels_cpu.numpy(), k=[1,3,5])
+        _p1,_p3,_p5=precision_k(pred_cpu.topk(k=5)[1].numpy(), labels_cpu.numpy(), k=[1,3,4])
         test_p1+=_p1
         test_p3+=_p3
         test_p5+=_p5
 
 
-        _ndcg1,_ndcg3,_ndcg5=ndcg_k(pred_cpu.topk(k=5)[1].numpy(), labels_cpu.numpy(), k=[1,3,5])
+        _ndcg1,_ndcg3,_ndcg5=ndcg_k(pred_cpu.topk(k=5)[1].numpy(), labels_cpu.numpy(), k=[1,3,4])
         test_ndcg1+=_ndcg1
         test_ndcg3+=_ndcg3
         test_ndcg5+=_ndcg5
+        calculate_scores( labels_cpu.numpy(),pred_cpu.numpy(),ep)
+        writer.add_scalar('Loss/validate', float(loss), ep)
 
         test_loss+=float(loss)
     batch_num=i+1
@@ -387,3 +434,33 @@ for ep in range(1,epoch+1):
         for param_group in optimizer.param_groups:
             param_group['lr']=0.0001
     pre_acc=test_p3
+
+import matplotlib.pyplot as plt
+things = ['x', 'y', 'z', 'sphere', 'cube', 'cylinder', 'large', 'small', 'rubber', 'metal', 'cyan', 'blue', 'yellow', 'purple', 'red', 'green', 'gray', 'brown']
+
+def binary_array_to_graph(arr,rounded=False):
+    if rounded:
+        arr =np.floor(np.array(arr)+0.7)
+    fig = plt.figure()
+    # if(len(arr.shape)!=2):
+    #     print(arr)
+    #     return
+    plt.xticks(np.arange(len(arr[0])))
+    plt.yticks(np.arange(len(arr)))
+    plt.suptitle('epoch 0 = ground truth')
+    plt.title([a for a, b in zip(things, arr[0]) if b])
+    plt.xlabel('attribute')
+    plt.ylabel('epoch')
+
+    plt.imshow(arr, cmap='Greys',  interpolation='nearest')
+    plt.show()
+    return fig
+
+print(predictions)
+
+for i in range(len(predictions)):
+    pred_arr = [ prediction[i] for prediction in predictions]
+    binary_array_to_graph(pred_arr,rounded=False)
+
+
+# summary(model,(64,99))

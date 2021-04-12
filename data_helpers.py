@@ -51,10 +51,10 @@ def load_data_and_labels(data):
     x_text = [s.split(" ") for s in x_text]
     # labels = [doc['catgy'] for doc in data]
     labels =[]
-    for doc in data:
-        labels.append([tuple(tuple(a) for a in doc['catgy'])])
+    # for doc in data:
+    #     labels.append([tuple(tuple(a) for a in doc['catgy'])])
 
-    # labels =   [doc['catgy'][0] + [x + 18 for x in doc['catgy'][1]] for doc in data] # add 18 to the second object to have a 1d array
+    labels =   [doc['catgy'][0] + [x + 18 for x in doc['catgy'][1]] for doc in data] # add 18 to the second object to have a 1d array
     row_idx, col_idx, val_idx = [], [], []
     for i in tqdm(range(len(labels))):
         l_list = list(set(labels[i]))  # remove duplicate cateories to avoid double count
@@ -65,11 +65,11 @@ def load_data_and_labels(data):
             col_idx.append(y)
             val_idx.append(1)
     m = max(row_idx) + 1
-    # n = max(col_idx) + 1
-    n= 18 # TODO: make this adaptive
+    n = max(col_idx) + 1
+    # n= 18 # TODO: make this adaptive
     # n = max([max(x) for x in col_idx])
-#    Y = sp.csr_matrix((val_idx, (row_idx, col_idx)), shape=(m, n))
-    Y = col_idx
+    Y = sp.csr_matrix((val_idx, (row_idx, col_idx)), shape=(m, n))
+    # Y = col_idx
 
     return [x_text, Y]
 

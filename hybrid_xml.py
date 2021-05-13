@@ -35,12 +35,14 @@ def outer(a, b=None):
    a = a.unsqueeze(dim=-1).expand(*size_a)
    b = b.unsqueeze(dim=-2).expand(*size_b)
    return a, b
+
 def hungarian_loss(predictions, targets):
 
-
+# TODO: RESHAPE FOR 2 OR 3 OR WHATEVER OBJECTS
+   index = len(targets.shape)-1
     #reshape for 2 objects
-   targets = targets.reshape((targets.shape[0], 2, int(targets.shape[2]/2)))
-   predictions = predictions.reshape((predictions.shape[0], 2,  int(predictions.shape[2]/2)))
+   targets = targets.reshape((targets.shape[0], 4, int(targets.shape[index]/4)))
+   predictions = predictions.reshape((predictions.shape[0], 4,  int(predictions.shape[index]/4)))
 
    # permute dimensions for pairwise distance computation between all slots
    predictions = predictions.permute(0, 2, 1)
@@ -57,6 +59,7 @@ def hungarian_loss(predictions, targets):
       sample[row_idx, col_idx].mean()
       for sample, (row_idx, col_idx) in zip(squared_error, indices)
    ]
+
    total_loss = torch.mean(torch.stack(list(losses)))
    return total_loss
 
@@ -73,21 +76,26 @@ def my_collate(batch):
     return [data, target]
 
 
-def load_data(data_path,max_length,vocab_size,batch_size=64):
-    X_trn, Y_trn, X_tst, Y_tst, vocabulary, vocabulary_inv = data_helpers.load_data(data_path, max_length=max_length, vocab_size=vocab_size)
+def load_data(data_path,max_length,vocab_size,batch_size=64,split= 0):
+    X_trn, Y_trn, X_tst, Y_tst, X_val, Y_val, vocabulary, vocabulary_inv = data_helpers.load_data(data_path, max_length=max_length, vocab_size=vocab_size,split=split)
+
     Y_trn = Y_trn[0:].toarray()
    #  Y_trn=np.insert(Y_trn,18,0,axis=1)
    #  Y_trn=np.insert(Y_trn,19,0,axis=1)
     Y_tst = Y_tst[0:].toarray()
    #  Y_trn = np.array(Y_trn)
    #  Y_tst = np.array(Y_tst)
+    Y_val = Y_val[0:].toarray()
 
     print('step 1')
     train_data = data_utils.TensorDataset(torch.from_numpy( X_trn).type(torch.LongTensor),torch.from_numpy(Y_trn).type(torch.LongTensor))
     test_data = data_utils.TensorDataset(torch.from_numpy(X_tst).type(torch.LongTensor),torch.from_numpy(Y_tst).type(torch.LongTensor))
+    val_data = data_utils.TensorDataset(torch.from_numpy(X_val).type(torch.LongTensor),torch.from_numpy(Y_val).type(torch.LongTensor))
+
     train_loader = data_utils.DataLoader(train_data, batch_size, drop_last=False, shuffle=True)
     test_loader = data_utils.DataLoader(test_data, batch_size, drop_last=False)
-    return train_loader, test_loader,vocabulary, X_tst, Y_tst, X_trn,Y_trn
+    val_loader = data_utils.DataLoader(val_data, batch_size, drop_last=False)
+    return train_loader, test_loader, val_loader,vocabulary, X_tst, Y_tst, X_trn,Y_trn, X_val,Y_val
 
 
 # In[4]:
@@ -102,12 +110,6 @@ batch_size=64
 
 # In[5]:
 
-
-
-print('-'*50)
-print('Loading data...'); start_time = timeit.default_timer()
-train_loader, test_loader,vocabulary, X_tst, Y_tst, X_trn,Y_trn= load_data(data_path,sequence_length,vocab_size,batch_size)
-print('Process time %.3f (secs)\n' % (timeit.default_timer() - start_time))
 
 
 # In[5]:
@@ -131,14 +133,6 @@ def load_glove_embeddings(path, word2idx, embedding_dim):
 
 # In[6]:
 
-
-#load glove 
-pretrain='glove'
-embedding_dim=300
-if pretrain=='glove':
-    #input word2vec file path
-    file_path=os.path.join('data','glove.6B.%dd.txt'%(embedding_dim))
-    embedding_weights = load_glove_embeddings(file_path,vocabulary,embedding_dim)
 
 
 # In[7]:
@@ -200,8 +194,8 @@ class Hybrid_XML(BasicModule):
         
         #shared for all attention component
         self.linear_final = torch.nn.Linear(2*self.hidden_size,self.hidden_size)
-        # self.linear_final = SetTransformer(2*self.hidden_size,36,self.hidden_size)
-
+        # self.linear_final = SetTransformer(2*self.hidden_size,76,self.hidden_size)
+        #
 
         self.output_layer=torch.nn.Linear(self.hidden_size,1)
 
@@ -303,13 +297,6 @@ if use_cuda:
 # In[14]:
 
 
-model=Hybrid_XML(num_labels=36,vocab_size=30001,embedding_size=300,embedding_weights=embedding_weights,
-                max_seq=500,hidden_size=256,d_a=256)#,label_emb=label_emb)
-# model.load('./rcv_log/rcv_9.pth')
-if use_cuda:
-    model.cuda()
-
-
 
 
 # In[15]:
@@ -323,16 +310,17 @@ if use_cuda:
 # In[16]:
 
 
-params = list(model.parameters())
-k = 0
-for i in params:
-    l = 1
-    print("structure of current layer：" + str(list(i.size())))
-    for j in i.size():
-        l *= j
-    print("sum of parameters：" + str(l))
-    k = k + l
-print("total sum of parameters：" + str(k))
+# params = list(model.parameters())
+# k = 0
+#
+#  params:
+#     l = 1
+#     print("structure of current layer：" + str(list(i.size())))
+#     for j in i.size():
+#         l *= j
+#     print("sum of parameters：" + str(l))
+#     k = k + l
+# print("total sum of parameters：" + str(k))
 
 
 def precision_k(pred, label, k=[1, 3, 5]):
@@ -359,7 +347,7 @@ def calculate_scores(targets,outputs,ep,print_scores=False,mode='validate'):
     # writer.add_scalars('AP/'+mode+'' ,{str(current_split): average_precision}, epoch)
     # writer.add_scalars('F1/'+mode+'' ,{str(current_split): f1_score_macro}, epoch)
     # writer.add_scalars('F1micro/'+mode+'' ,{str(current_split): f1_score_micro}, epoch)
-    writer.add_scalar('AP/'+mode+'' , average_precision, ep)
+    return average_precision
     # writer.add_scalar('F1/'+mode+'' , f1_score_macro, ep)
     # writer.add_scalar('F1micro/'+mode+'' , f1_score_micro, ep)
 
@@ -387,98 +375,150 @@ def ndcg_k(pred, label, k=[1, 3, 5]):
     return ndcg
 
 
-optimizer=torch.optim.Adam(filter(lambda p: p.requires_grad,model.parameters()), lr=0.002,weight_decay=4e-5)
 criterion=torch.nn.BCELoss(reduction='sum')
 epoch=15
 best_acc=0.0
 pre_acc=0.0
 
-writer = SummaryWriter()
 
-# if not os.path.isdir('./rcv_log'):
-#     os.makedirs('./rcv_log')
-# trace_file='./rcv_log/trace_rcv.txt'
+def calculate_test_val( val_loader,logging=False,mode='validate'):
+    pre_acc = 0.0
 
-# visualize_x =  X_tst[:5]
-# visualize_y = Y_tst[:5]
-predictions =[]
-for ep in range(1,epoch+1): 
-    train_loss=0
-    print("----epoch: %2d---- "%ep)
-    model.train()
-    for i,(data,labels) in enumerate(tqdm(train_loader)):
-        optimizer.zero_grad()
-        
-        data=data.cuda()
-        labels=labels.cuda()
-
-        pred=model(data)
-        labels = labels.unsqueeze(1)
-        pred = pred.unsqueeze(1)
-        loss = hungarian_loss(pred, labels)
-#criterion(pred,labels.float())/pred.size(0)
-        loss.backward()
-        optimizer.step()
-
-        train_loss+=float(loss)
-    batch_num=i+1
-    train_loss/=batch_num
-    
-    print("epoch %2d 训练结束 : avg_loss = %.4f"%(ep,train_loss))
-    print("开始进行validation")
-    test_loss=0
+    test_loss = 0
+    test_ap = 0
     test_p1, test_p3, test_p5 = 0, 0, 0
-    test_ndcg1, test_ndcg3, test_ndcg5=0, 0, 0
+    test_ndcg1, test_ndcg3, test_ndcg5 = 0, 0, 0
     model.eval()
-    for i,(data,labels) in enumerate(tqdm(test_loader)):
-        
-        data=data.cuda()
-        labels=labels.cuda()
-        pred=model(data)
-        loss=criterion(pred,labels.float())/pred.size(0)
+    for i, (data, labels) in enumerate(tqdm(val_loader)):
 
-        #计算metric
-        labels_cpu=labels.data.cpu()
-        pred_cpu=pred.data.cpu()
-        if i== 2:
-            if ep == 1:
-                predictions.append(labels_cpu.numpy())
-            predictions.append(pred_cpu.numpy())
+        data = data.cuda()
+        labels = labels.cuda()
+        pred = model(data)
+        loss = hungarian_loss(pred, labels)
 
-        _p1,_p3,_p5=precision_k(pred_cpu.topk(k=5)[1].numpy(), labels_cpu.numpy(), k=[1,3,4])
-        test_p1+=_p1
-        test_p3+=_p3
-        test_p5+=_p5
+        # loss=criterion(pred,labels.float())/pred.size(0)
 
+        # 计算metric
+        labels_cpu = labels.data.cpu()
+        pred_cpu = pred.data.cpu()
+        if logging:
+            if i == 0:
+                if ep == 1:
+                    predictions.append(labels_cpu.numpy())
+                predictions.append(pred_cpu.numpy())
 
-        _ndcg1,_ndcg3,_ndcg5=ndcg_k(pred_cpu.topk(k=5)[1].numpy(), labels_cpu.numpy(), k=[1,3,4])
-        test_ndcg1+=_ndcg1
-        test_ndcg3+=_ndcg3
-        test_ndcg5+=_ndcg5
-        calculate_scores( labels_cpu.numpy(),pred_cpu.numpy(),ep)
-        writer.add_scalar('Loss/validate', float(loss), ep)
+        _p1, _p3, _p5 = precision_k(pred_cpu.topk(k=5)[1].numpy(), labels_cpu.numpy(), k=[1, 3, 4])
+        test_p1 += _p1
+        test_p3 += _p3
+        test_p5 += _p5
 
-        test_loss+=float(loss)
-    batch_num=i+1
-    test_loss/=batch_num
+        _ndcg1, _ndcg3, _ndcg5 = ndcg_k(pred_cpu.topk(k=5)[1].numpy(), labels_cpu.numpy(), k=[1, 3, 4])
+        test_ndcg1 += _ndcg1
+        test_ndcg3 += _ndcg3
+        test_ndcg5 += _ndcg5
+        ap = calculate_scores(labels_cpu.numpy(), pred_cpu.numpy(), ep)
+        test_ap += float(ap)
 
-    test_p1/=batch_num
-    test_p3/=batch_num
-    test_p5/=batch_num
+        test_loss += float(loss)
+    batch_num = i + 1
+    test_loss /= batch_num
+    test_ap /=batch_num
+    writer.add_scalar('AP/' + mode, float(test_ap), ep)
+    writer.add_scalar('Loss/'+ mode, float(test_loss), ep)
+    test_p1 /= batch_num
+    test_p3 /= batch_num
+    test_p5 /= batch_num
+    writer.add_scalar('AP/' + mode+'/p1', test_p1, ep)
+    writer.add_scalar('AP/' + mode+'/p3', test_p3, ep)
+    writer.add_scalar('AP/' + mode+'/p4', test_p5, ep)
 
-    test_ndcg1/=batch_num
-    test_ndcg3/=batch_num
-    test_ndcg5/=batch_num
+    test_ndcg1 /= batch_num
+    test_ndcg3 /= batch_num
+    test_ndcg5 /= batch_num
 
-    print("epoch %2d 测试结束 : avg_loss = %.4f"%(ep,test_loss))
-    print("precision@1 : %.4f , precision@3 : %.4f , precision@5 : %.4f "%(test_p1,test_p3,test_p5))
-    print("ndcg@1 : %.4f , ndcg@3 : %.4f , ndcg@5 : %.4f "%(test_ndcg1,test_ndcg3,test_ndcg5))
+    print("epoch %2d 测试结束 : avg_loss = %.4f" % (ep, test_loss))
+    print("precision@1 : %.4f , precision@3 : %.4f , precision@5 : %.4f " % (test_p1, test_p3, test_p5))
+    print("ndcg@1 : %.4f , ndcg@3 : %.4f , ndcg@5 : %.4f " % (test_ndcg1, test_ndcg3, test_ndcg5))
 
-
-    if test_p3<pre_acc:
+    if test_p3 < pre_acc:
         for param_group in optimizer.param_groups:
-            param_group['lr']=0.0001
-    pre_acc=test_p3
+            param_group['lr'] = 0.0001
+    pre_acc = test_p3
+
+
+
+for i in range(5):
+    print('-'*50)
+    print('Loading data...'); start_time = timeit.default_timer()
+    train_loader, test_loader, val_loader, vocabulary, X_tst, Y_tst, X_trn,Y_trn, X_val, Y_val= load_data(data_path,sequence_length,vocab_size,batch_size,split=i)
+    print('Process time %.3f (secs)\n' % (timeit.default_timer() - start_time))
+
+    # load glove
+    pretrain = 'glove'
+    embedding_dim = 300
+    if pretrain == 'glove':
+        # input word2vec file path
+        file_path = os.path.join('data', 'glove.6B.%dd.txt' % (embedding_dim))
+        embedding_weights = load_glove_embeddings(file_path, vocabulary, embedding_dim)
+
+    runname = "setlast 1-4obj split " + str(i) + " out of 5, 0.25 noise "+ str(epoch) + " epochs"
+    writer = SummaryWriter(comment=runname)
+
+    # TODO: UPDATE NUM_LABELS
+    model = Hybrid_XML(num_labels=76, vocab_size=30001, embedding_size=300, embedding_weights=embedding_weights,
+                       max_seq=500, hidden_size=256, d_a=256)  # ,label_emb=label_emb)
+    # model.load('./rcv_log/rcv_9.pth')
+    if use_cuda:
+        model.cuda()
+    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=0.001, weight_decay=4e-5)
+
+    # if not os.path.isdir('./rcv_log'):
+    #     os.makedirs('./rcv_log')
+    # trace_file='./rcv_log/trace_rcv.txt'
+
+    # visualize_x =  X_tst[:5]
+    # visualize_y = Y_tst[:5]
+    predictions =[]
+    for ep in range(1,epoch+1):
+        train_loss=0
+        print("----epoch: %2d---- "%ep)
+        model.train()
+        for i,(data,labels) in enumerate(tqdm(train_loader)):
+            optimizer.zero_grad()
+
+            data=data.cuda()
+            labels=labels.cuda()
+
+            pred=model(data)
+            labels = labels.unsqueeze(1)
+            pred = pred.unsqueeze(1)
+            loss = hungarian_loss(pred, labels)
+    #criterion(pred,labels.float())/pred.size(0)
+            loss.backward()
+            optimizer.step()
+            labels_cpu = labels.data.cpu()
+            pred_cpu = pred.data.cpu()
+                #TODO: average pro batch -> batchloss sum durch anzahl batches
+            ap = calculate_scores(labels_cpu.numpy().squeeze(), pred_cpu.numpy().squeeze(), ep,mode="train")
+
+
+            train_loss+=float(loss)
+        batch_num=i+1
+        train_loss/=batch_num
+        ap/=batch_num
+
+
+        writer.add_scalar('Loss/train', float(train_loss), ep)
+        writer.add_scalar('AP/' + "train" + '', ap, ep)
+        print("epoch %2d 训练结束 : avg_loss = %.4f"%(ep,train_loss))
+        print("开始进行validation")
+        print("test set")
+        calculate_test_val(test_loader,mode="test")
+        print("validation set (human)")
+
+        calculate_test_val(val_loader,logging=True,mode='validate')
+
+
 
 import matplotlib.pyplot as plt
 things = ['x', 'y', 'z', 'sphere', 'cube', 'cylinder', 'large', 'small', 'rubber', 'metal', 'cyan', 'blue', 'yellow', 'purple', 'red', 'green', 'gray', 'brown']
@@ -501,11 +541,52 @@ def binary_array_to_graph(arr,rounded=False):
     plt.show()
     return fig
 
-print(predictions)
 
-for i in range(len(predictions)):
+def distance(x,y):
+    return np.sum(np.abs(x-y))
+
+# for i in range(len(predictions[0])):#go through every GT, and permute it so it fits with the pred
+#     number_objects = int(len(predictions[0][0]) / 19)
+#     gt = predictions[0][i].reshape(number_objects, 19)
+#
+#     last_row = predictions[-1][i].reshape(number_objects, 19)
+#     gt = torch.from_numpy(gt)
+#     last_row = torch.from_numpy(last_row)
+#     gt = gt.unsqueeze(0)
+#     last_row = last_row.unsqueeze(0)
+#     last_row = last_row.permute(0, 2, 1)
+#     gt = gt.permute(0, 2, 1)
+#
+#     gt_o, last_row_o  = outer(gt,last_row)
+#
+#     # squared_error shape :: (n, s, s)
+#     squared_error = F.smooth_l1_loss(gt_o.float(), last_row_o.float().expand_as(gt_o), reduction="none").mean(1)
+#
+#     squared_error_np = squared_error.cpu().numpy()
+#     # indices = map(hungarian_loss_per_sample, squared_error_np)
+#     # losses = [
+#     #     sample[row_idx, col_idx].mean()
+#     #     for sample, (row_idx, col_idx) in zip(squared_error, indices)
+#     # ]
+#
+#     indices = hungarian_loss_per_sample(squared_error_np[0]) # indices how to swap the array
+#     gt = gt.permute(0, 2, 1)
+#
+#     gt = gt.squeeze()
+#     print(gt)
+#     print(indices)
+#     gt[np.array(range(4))] = gt[indices[1]]
+#     print(gt)
+#     predictions[0][i] = gt.reshape(76).numpy()
+#
+#
+#     print()
+
+for i in range(len(predictions[0])):
+    print(i)
     pred_arr = [ prediction[i] for prediction in predictions]
     binary_array_to_graph(pred_arr,rounded=False)
+    binary_array_to_graph(pred_arr,rounded=True)
 
 
 # summary(model,(64,99))

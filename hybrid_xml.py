@@ -38,11 +38,11 @@ def outer(a, b=None):
 
 def hungarian_loss(predictions, targets):
 
-# TODO: RESHAPE FOR 2 OR 3 OR WHATEVER OBJECTS
    index = len(targets.shape)-1
     #reshape for 2 objects
-   targets = targets.reshape((targets.shape[0], 4, int(targets.shape[index]/4)))
-   predictions = predictions.reshape((predictions.shape[0], 4,  int(predictions.shape[index]/4)))
+   num_obj  = int(arr_length/19)
+   targets = targets.reshape((targets.shape[0], num_obj, int(targets.shape[index]/num_obj)))
+   predictions = predictions.reshape((predictions.shape[0], num_obj,  int(predictions.shape[index]/num_obj)))
 
    # permute dimensions for pairwise distance computation between all slots
    predictions = predictions.permute(0, 2, 1)
@@ -80,15 +80,11 @@ def load_data(data_path,max_length,vocab_size,batch_size=64,split= 0):
     X_trn, Y_trn, X_tst, Y_tst, X_val, Y_val, vocabulary, vocabulary_inv = data_helpers.load_data(data_path, max_length=max_length, vocab_size=vocab_size,split=split)
 
     Y_trn = Y_trn[0:].toarray()
-   #  Y_trn=np.insert(Y_trn,18,0,axis=1)
-   #  Y_trn=np.insert(Y_trn,19,0,axis=1)
     Y_tst = Y_tst[0:].toarray()
-   #  Y_trn = np.array(Y_trn)
-   #  Y_tst = np.array(Y_tst)
     Y_val = Y_val[0:].toarray()
-
-    print('step 1')
-    train_data = data_utils.TensorDataset(torch.from_numpy( X_trn).type(torch.LongTensor),torch.from_numpy(Y_trn).type(torch.LongTensor))
+    train_data = data_utils.TensorDataset(
+        torch.from_numpy( X_trn).type(torch.LongTensor),torch.from_numpy(Y_trn).type(torch.LongTensor)
+    )
     test_data = data_utils.TensorDataset(torch.from_numpy(X_tst).type(torch.LongTensor),torch.from_numpy(Y_tst).type(torch.LongTensor))
     val_data = data_utils.TensorDataset(torch.from_numpy(X_val).type(torch.LongTensor),torch.from_numpy(Y_val).type(torch.LongTensor))
 
@@ -97,15 +93,22 @@ def load_data(data_path,max_length,vocab_size,batch_size=64,split= 0):
     val_loader = data_utils.DataLoader(val_data, batch_size, drop_last=False)
     return train_loader, test_loader, val_loader,vocabulary, X_tst, Y_tst, X_trn,Y_trn, X_val,Y_val
 
+def load_data_2(data_path,max_length,vocab_size,batch_size=64,split= 0):
+    X_trn, Y_trn, X_tst, Y_tst, vocabulary, vocabulary_inv = data_helpers.load_data_2_obj(data_path, max_length=max_length, vocab_size=vocab_size,split=split)
+
+    Y_trn = Y_trn[0:].toarray()
+    Y_tst = Y_tst[0:].toarray()
+    train_data = data_utils.TensorDataset(torch.from_numpy( X_trn).type(torch.LongTensor),torch.from_numpy(Y_trn).type(torch.LongTensor))
+    test_data = data_utils.TensorDataset(torch.from_numpy(X_tst).type(torch.LongTensor),torch.from_numpy(Y_tst).type(torch.LongTensor))
+
+    train_loader = data_utils.DataLoader(train_data, batch_size, drop_last=False, shuffle=True)
+    test_loader = data_utils.DataLoader(test_data, batch_size, drop_last=False)
+    return train_loader, test_loader, vocabulary, X_tst, Y_tst, X_trn,Y_trn
+
 
 # In[4]:
 
 
-#input data_path
-data_path='data/rcv1_raw_text.p'
-sequence_length=500
-vocab_size=30000
-batch_size=64
 
 
 # In[5]:
@@ -193,8 +196,8 @@ class Hybrid_XML(BasicModule):
         self.linear_weight2=torch.nn.Linear(2*self.hidden_size,1)
         
         #shared for all attention component
-        self.linear_final = torch.nn.Linear(2*self.hidden_size,self.hidden_size)
-        # self.linear_final = SetTransformer(2*self.hidden_size,76,self.hidden_size)
+        # self.linear_final = torch.nn.Linear(2*self.hidden_size,self.hidden_size)
+        self.linear_final = SetTransformer(2*self.hidden_size,arr_length,self.hidden_size)
         #
 
         self.output_layer=torch.nn.Linear(self.hidden_size,1)
@@ -334,22 +337,51 @@ def precision_k(pred, label, k=[1, 3, 5]):
         precision.append(p*100/batch_size)
     
     return precision
-def calculate_scores(targets,outputs,ep,print_scores=False,mode='validate'):
-    # outputs =outputs.squeeze()
-    # targets = targets.squeeze() #TODO: replace this with loops when using multiple objects
+
+
+def arrange_order(targets, outputs):
+    targets_c = np.array(targets, copy=True)
+    predictions = outputs
+    for i in range(len(predictions)):  # go through every GT, and permute it so it fits with the pred
+        number_objects = int(len(predictions[0]) / 19)
+        gt = targets_c[i].reshape(number_objects, 19)
+
+        last_row = predictions[i].reshape(number_objects, 19)
+        gt = torch.from_numpy(gt)
+        last_row = torch.from_numpy(last_row)
+        gt = gt.unsqueeze(0)
+        last_row = last_row.unsqueeze(0)
+        last_row = last_row.permute(0, 2, 1)
+        gt = gt.permute(0, 2, 1)
+
+        gt_o, last_row_o = outer(gt, last_row)
+
+        # squared_error shape :: (n, s, s)
+        squared_error = F.smooth_l1_loss(gt_o.float(), last_row_o.float().expand_as(gt_o), reduction="none").mean(1)
+
+        squared_error_np = squared_error.cpu().numpy()
+        indices = hungarian_loss_per_sample(squared_error_np[0])  # indices how to swap the array
+        gt = gt.permute(0, 2, 1)
+
+        gt = gt.squeeze()
+        # gt[np.array(range(4))] = gt[indices[1]].numpy().reshape(76)
+        # print(targets[i])
+        targets[i] = gt[indices[1]].numpy().reshape(arr_length) #gt.reshape(76).numpy()
+        # print(targets[i])
+
+    return targets, predictions
+
+def calculate_scores(targets,outputs,ep=0,print_scores=False,mode='validate'):
+    average_precision_before = metrics.average_precision_score(targets, outputs, average='micro')
+    # targets,outputs= arrange_order(targets,outputs) todo
+
     average_precision = metrics.average_precision_score(targets, outputs, average='micro')
-    # f1_score_micro = metrics.f1_score(targets, outputs >= 0.5, average='micro')
+    f1_score_micro = metrics.f1_score(targets, outputs >= 0.3, average='micro')
+    f1_score_macro = f1_score_micro
     # f1_score_macro = metrics.f1_score(targets, outputs >= 0.5, average='macro')
     if print_scores :
         print(f"Average_Precision Score = {average_precision}")
-        # print(f"F1 Score (Micro) = {f1_score_micro}")
-        # print(f"F1 Score (Macro) = {f1_score_macro}")
-    # writer.add_scalars('AP/'+mode+'' ,{str(current_split): average_precision}, epoch)
-    # writer.add_scalars('F1/'+mode+'' ,{str(current_split): f1_score_macro}, epoch)
-    # writer.add_scalars('F1micro/'+mode+'' ,{str(current_split): f1_score_micro}, epoch)
-    return average_precision
-    # writer.add_scalar('F1/'+mode+'' , f1_score_macro, ep)
-    # writer.add_scalar('F1micro/'+mode+'' , f1_score_micro, ep)
+    return average_precision, [metrics.average_precision_score(targets[i], outputs[i], average='micro') for i in range(len(targets))],f1_score_micro,f1_score_macro
 
 def ndcg_k(pred, label, k=[1, 3, 5]):
     batch_size = pred.shape[0]
@@ -375,17 +407,18 @@ def ndcg_k(pred, label, k=[1, 3, 5]):
     return ndcg
 
 
-criterion=torch.nn.BCELoss(reduction='sum')
-epoch=15
-best_acc=0.0
-pre_acc=0.0
+
 
 
 def calculate_test_val( val_loader,logging=False,mode='validate'):
     pre_acc = 0.0
+    predictions = []
+    average_precision_arr = []
 
     test_loss = 0
     test_ap = 0
+    test_f1_micro = 0
+    test_f1_macro = 0
     test_p1, test_p3, test_p5 = 0, 0, 0
     test_ndcg1, test_ndcg3, test_ndcg5 = 0, 0, 0
     model.eval()
@@ -393,44 +426,66 @@ def calculate_test_val( val_loader,logging=False,mode='validate'):
 
         data = data.cuda()
         labels = labels.cuda()
+        labels =labels.float()
         pred = model(data)
-        loss = hungarian_loss(pred, labels)
 
-        # loss=criterion(pred,labels.float())/pred.size(0)
+        if arr_length>18:
+            loss = hungarian_loss(pred, labels)
+        else:
+            loss=criterion(pred,labels.float())/pred.size(0)
 
         # 计算metric
         labels_cpu = labels.data.cpu()
+        labels_cpu_previous = np.copy(labels_cpu)
         pred_cpu = pred.data.cpu()
+        pred_cpu_previous = np.copy(pred_cpu)
+
         if logging:
             if i == 0:
                 if ep == 1:
-                    predictions.append(labels_cpu.numpy())
-                predictions.append(pred_cpu.numpy())
-
-        _p1, _p3, _p5 = precision_k(pred_cpu.topk(k=5)[1].numpy(), labels_cpu.numpy(), k=[1, 3, 4])
+                    predictions_outside.append(labels_cpu.numpy())
+                predictions_outside.append(pred_cpu.numpy())
+        # labels_cpu, pred_cpu = arrange_order(np.copy(labels_cpu.numpy()), np.copy(pred_cpu.numpy())) #todo
+        # if not np.array_equal(labels_cpu_previous,labels_cpu):
+            # print("arranged")
+        if not np.array_equal(pred_cpu,pred_cpu_previous):
+            print('prediction reordered? etwas cringe brudi')
+            exit()
+        # labels_cpu = torch.from_numpy(labels_cpu) todo
+        # pred_cpu = torch.from_numpy(pred_cpu)
+        _p1, _p3, _p5 = precision_k(pred_cpu.topk(k=5)[1].numpy(), labels_cpu.numpy(), k=[1, 3, 5])
         test_p1 += _p1
         test_p3 += _p3
         test_p5 += _p5
 
-        _ndcg1, _ndcg3, _ndcg5 = ndcg_k(pred_cpu.topk(k=5)[1].numpy(), labels_cpu.numpy(), k=[1, 3, 4])
+        _ndcg1, _ndcg3, _ndcg5 = ndcg_k(pred_cpu.topk(k=5)[1].numpy(), labels_cpu.numpy(), k=[1, 3, 5])
         test_ndcg1 += _ndcg1
         test_ndcg3 += _ndcg3
         test_ndcg5 += _ndcg5
-        ap = calculate_scores(labels_cpu.numpy(), pred_cpu.numpy(), ep)
+        ap, ap_arr,f1_micro,f1_macro = calculate_scores(labels_cpu.numpy(), pred_cpu.numpy())
+        average_precision_arr.extend(ap_arr)
         test_ap += float(ap)
+        test_f1_macro += float(f1_micro)
+        test_f1_micro += float(f1_micro)
+        predictions.extend(pred_cpu)
 
-        test_loss += float(loss)
+
+    test_loss += float(loss)
     batch_num = i + 1
     test_loss /= batch_num
     test_ap /=batch_num
+    test_f1_macro /=batch_num
+    test_f1_micro /=batch_num
     writer.add_scalar('AP/' + mode, float(test_ap), ep)
+    writer.add_scalar('F1_micro/' + mode, float(test_f1_micro), ep)
+    writer.add_scalar('F1_macro/' + mode, float(test_f1_macro), ep)
     writer.add_scalar('Loss/'+ mode, float(test_loss), ep)
     test_p1 /= batch_num
     test_p3 /= batch_num
     test_p5 /= batch_num
     writer.add_scalar('AP/' + mode+'/p1', test_p1, ep)
     writer.add_scalar('AP/' + mode+'/p3', test_p3, ep)
-    writer.add_scalar('AP/' + mode+'/p4', test_p5, ep)
+    writer.add_scalar('AP/' + mode+'/p5', test_p5, ep)
 
     test_ndcg1 /= batch_num
     test_ndcg3 /= batch_num
@@ -444,88 +499,14 @@ def calculate_test_val( val_loader,logging=False,mode='validate'):
         for param_group in optimizer.param_groups:
             param_group['lr'] = 0.0001
     pre_acc = test_p3
-
-
-
-for i in range(5):
-    print('-'*50)
-    print('Loading data...'); start_time = timeit.default_timer()
-    train_loader, test_loader, val_loader, vocabulary, X_tst, Y_tst, X_trn,Y_trn, X_val, Y_val= load_data(data_path,sequence_length,vocab_size,batch_size,split=i)
-    print('Process time %.3f (secs)\n' % (timeit.default_timer() - start_time))
-
-    # load glove
-    pretrain = 'glove'
-    embedding_dim = 300
-    if pretrain == 'glove':
-        # input word2vec file path
-        file_path = os.path.join('data', 'glove.6B.%dd.txt' % (embedding_dim))
-        embedding_weights = load_glove_embeddings(file_path, vocabulary, embedding_dim)
-
-    runname = "setlast 1-4obj split " + str(i) + " out of 5, 0.25 noise "+ str(epoch) + " epochs"
-    writer = SummaryWriter(comment=runname)
-
-    # TODO: UPDATE NUM_LABELS
-    model = Hybrid_XML(num_labels=76, vocab_size=30001, embedding_size=300, embedding_weights=embedding_weights,
-                       max_seq=500, hidden_size=256, d_a=256)  # ,label_emb=label_emb)
-    # model.load('./rcv_log/rcv_9.pth')
-    if use_cuda:
-        model.cuda()
-    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=0.001, weight_decay=4e-5)
-
-    # if not os.path.isdir('./rcv_log'):
-    #     os.makedirs('./rcv_log')
-    # trace_file='./rcv_log/trace_rcv.txt'
-
-    # visualize_x =  X_tst[:5]
-    # visualize_y = Y_tst[:5]
-    predictions =[]
-    for ep in range(1,epoch+1):
-        train_loss=0
-        print("----epoch: %2d---- "%ep)
-        model.train()
-        for i,(data,labels) in enumerate(tqdm(train_loader)):
-            optimizer.zero_grad()
-
-            data=data.cuda()
-            labels=labels.cuda()
-
-            pred=model(data)
-            labels = labels.unsqueeze(1)
-            pred = pred.unsqueeze(1)
-            loss = hungarian_loss(pred, labels)
-    #criterion(pred,labels.float())/pred.size(0)
-            loss.backward()
-            optimizer.step()
-            labels_cpu = labels.data.cpu()
-            pred_cpu = pred.data.cpu()
-                #TODO: average pro batch -> batchloss sum durch anzahl batches
-            ap = calculate_scores(labels_cpu.numpy().squeeze(), pred_cpu.numpy().squeeze(), ep,mode="train")
-
-
-            train_loss+=float(loss)
-        batch_num=i+1
-        train_loss/=batch_num
-        ap/=batch_num
-
-
-        writer.add_scalar('Loss/train', float(train_loss), ep)
-        writer.add_scalar('AP/' + "train" + '', ap, ep)
-        print("epoch %2d 训练结束 : avg_loss = %.4f"%(ep,train_loss))
-        print("开始进行validation")
-        print("test set")
-        calculate_test_val(test_loader,mode="test")
-        print("validation set (human)")
-
-        calculate_test_val(val_loader,logging=True,mode='validate')
-
-
+    return predictions, average_precision_arr
 
 import matplotlib.pyplot as plt
 things = ['x', 'y', 'z', 'sphere', 'cube', 'cylinder', 'large', 'small', 'rubber', 'metal', 'cyan', 'blue', 'yellow', 'purple', 'red', 'green', 'gray', 'brown']
 
-def binary_array_to_graph(arr,rounded=False):
+def binary_array_to_graph(arr,title=False,rounded=False):
     if rounded:
-        arr =np.floor(np.array(arr)+0.7)
+        arr =np.floor(np.array(arr)+0.8)
     fig = plt.figure()
     # if(len(arr.shape)!=2):
     #     print(arr)
@@ -533,7 +514,10 @@ def binary_array_to_graph(arr,rounded=False):
     plt.xticks(np.arange(len(arr[0])))
     plt.yticks(np.arange(len(arr)))
     plt.suptitle('epoch 0 = ground truth')
-    plt.title([a for a, b in zip(things, arr[0]) if b])
+    if title == False:
+        plt.title([a for a, b in zip(things, arr[0]) if b])
+    else:
+        plt.title(title)
     plt.xlabel('attribute')
     plt.ylabel('epoch')
 
@@ -545,48 +529,249 @@ def binary_array_to_graph(arr,rounded=False):
 def distance(x,y):
     return np.sum(np.abs(x-y))
 
-# for i in range(len(predictions[0])):#go through every GT, and permute it so it fits with the pred
-#     number_objects = int(len(predictions[0][0]) / 19)
-#     gt = predictions[0][i].reshape(number_objects, 19)
-#
-#     last_row = predictions[-1][i].reshape(number_objects, 19)
-#     gt = torch.from_numpy(gt)
-#     last_row = torch.from_numpy(last_row)
-#     gt = gt.unsqueeze(0)
-#     last_row = last_row.unsqueeze(0)
-#     last_row = last_row.permute(0, 2, 1)
-#     gt = gt.permute(0, 2, 1)
-#
-#     gt_o, last_row_o  = outer(gt,last_row)
-#
-#     # squared_error shape :: (n, s, s)
-#     squared_error = F.smooth_l1_loss(gt_o.float(), last_row_o.float().expand_as(gt_o), reduction="none").mean(1)
-#
-#     squared_error_np = squared_error.cpu().numpy()
-#     # indices = map(hungarian_loss_per_sample, squared_error_np)
-#     # losses = [
-#     #     sample[row_idx, col_idx].mean()
-#     #     for sample, (row_idx, col_idx) in zip(squared_error, indices)
-#     # ]
-#
-#     indices = hungarian_loss_per_sample(squared_error_np[0]) # indices how to swap the array
-#     gt = gt.permute(0, 2, 1)
-#
-#     gt = gt.squeeze()
-#     print(gt)
-#     print(indices)
-#     gt[np.array(range(4))] = gt[indices[1]]
-#     print(gt)
-#     predictions[0][i] = gt.reshape(76).numpy()
-#
-#
-#     print()
 
-for i in range(len(predictions[0])):
-    print(i)
-    pred_arr = [ prediction[i] for prediction in predictions]
-    binary_array_to_graph(pred_arr,rounded=False)
-    binary_array_to_graph(pred_arr,rounded=True)
+criterion=torch.nn.BCELoss(reduction='sum')
+epoch=20
+best_acc=0.0
+pre_acc=0.0
 
 
-# summary(model,(64,99))
+
+#input data_path
+data_path='../MasterThesis/oneobject_shuffled_order nonoise.json'
+sequence_length=500
+vocab_size=30000
+batch_size=64
+
+# paths_one_object = {1:'../MasterThesis/oneobject_shuffled_order.json',
+#          0.25:
+#          '../MasterThesis/oneobject_shuffled_order_25 noise.json',
+#          0.5:
+#              '../MasterThesis/oneobject_shuffled_order_5 noise.json',
+#          0.75:
+#              '../MasterThesis/oneobject_shuffled_order_75 noise.json',
+#          0:'../MasterThesis/oneobject_shuffled_order nonoise.json'
+#          }
+# noises_one_object = [0,0.25,0.5,0.75,1]
+
+noises = [0]#,1,2]#,1,2,3,10]
+lrs = [0.0005]#,0.001]
+arr_length = 38 # 76 for 4 objects
+double_data =[True]
+if __name__ == '__main__':
+    for doub in double_data :
+        if doub:
+            epoch= 15
+        else:
+            epoch= 50
+        for lr in lrs:
+            for noise in noises:
+                for i in range(5):
+                    print('-'*50)
+                    print('Loading data...'); start_time = timeit.default_timer()
+                    # data_path = '../MasterThesis/one_to_4_objects_shuffled_order '+str(noise) +' noise.json'
+                    # if doub:
+                    #     data_path = '../MasterThesis/simple_description_1_4_4_object_shuffled_order '+str(noise) +' noise.json'
+                    # else:
+                    #     data_path = '../MasterThesis/simple_description_1_4_object_shuffled_order '+str(noise) +' noise.json'
+
+                    # data_path = '../MasterThesis/simple_description_1_object_shuffled_order 0 noise.json'
+                    if doub:
+                        data_path = '../MasterThesis/simple_description_2_2_object_shuffled_order 0 noise.json'
+                    else:
+                        data_path = '../MasterThesis/simple_description_2_object_shuffled_order 0 noise.json'
+
+                    # data_path = '../MasterThesis/2_objects_shuffled_order 0 noise.json'
+                    # data_path = '../MasterThesis/oneobject_shuffled_order nonoise.json'
+                    # train_loader, test_loader, val_loader, vocabulary, X_tst, Y_tst, X_trn,Y_trn, X_val, Y_val= load_data(data_path,sequence_length,vocab_size,batch_size,split=i)
+                    train_loader, test_loader,  vocabulary, X_tst, Y_tst, X_trn,Y_trn = load_data_2(data_path,sequence_length,vocab_size,batch_size,split=i)
+                    print('Process time %.3f (secs)\n' % (timeit.default_timer() - start_time))
+                    predictions_outside = []
+                    # load glove
+                    pretrain = 'glove'
+                    embedding_dim = 300
+                    if pretrain == 'glove':
+                        # input word2vec file path
+                        file_path = os.path.join('data', 'glove.6B.%dd.txt' % (embedding_dim))
+                        embedding_weights = load_glove_embeddings(file_path, vocabulary, embedding_dim)
+
+                    runname = "simple_" + str(arr_length) +" obj |split " + str(i) + " out of 5| "+str(noise)+" noise |"+ str(epoch) + " epochs| lr: " +str(lr) +str(doub)
+                    writer = SummaryWriter(comment=runname)
+
+                    # TODO: UPDATE NUM_LABELS
+                    model = Hybrid_XML(num_labels=arr_length, vocab_size=30001, embedding_size=300, embedding_weights=embedding_weights,
+                                       max_seq=500, hidden_size=256, d_a=256)  # ,label_emb=label_emb)
+                    # model.load('./rcv_log/rcv_9.pth')
+                    if use_cuda:
+                        model.cuda()
+                    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr, weight_decay=4e-5)
+
+                    # if not os.path.isdir('./rcv_log'):
+                    #     os.makedirs('./rcv_log')
+                    # trace_file='./rcv_log/trace_rcv.txt'
+
+                    # visualize_x =  X_tst[:5]
+                    # visualize_y = Y_tst[:5]
+                    predictions =[]
+                    for ep in range(1,epoch+1):
+                        train_loss=0
+                        train_ap = 0
+                        train_f1_micro =0
+                        train_f1_macro= 0
+                        print("----epoch: %2d---- "%ep)
+                        model.train()
+                        for i,(data,labels) in enumerate(tqdm(train_loader)):
+                            optimizer.zero_grad()
+
+                            data=data.cuda()
+                            labels=labels.cuda()
+
+                            pred=model(data)
+                            labels = labels.unsqueeze(1)
+                            pred = pred.unsqueeze(1)
+                            if arr_length>18:
+                                loss = hungarian_loss(pred, labels)
+                            else:
+                                labels = labels.float()
+                                loss = criterion(pred, labels)/pred.size(0)
+                            loss.backward()
+                            optimizer.step()
+                            labels_cpu = labels.data.cpu()
+                            pred_cpu = pred.data.cpu()
+                            ap,ap_arr,f1_micro, f1_macro = calculate_scores(labels_cpu.numpy().squeeze(), pred_cpu.numpy().squeeze(), ep,mode="train")
+                            train_f1_micro +=f1_micro
+                            train_f1_macro +=f1_macro
+
+                            train_ap +=ap
+
+                            train_loss+=float(loss)
+                        batch_num=i+1
+                        train_loss/=batch_num
+                        train_ap/=batch_num
+                        train_f1_macro/=batch_num
+                        train_f1_micro/=batch_num
+
+
+                        writer.add_scalar('Loss/train', float(train_loss), ep)
+                        writer.add_scalar('AP/' + "train" + '', train_ap, ep)
+                        writer.add_scalar('F1_micro/' + "train" + '', train_f1_micro, ep)
+                        writer.add_scalar('F1_macro/' + "train" + '', train_f1_macro, ep)
+
+                        print("epoch %2d 训练结束 : avg_loss = %.4f"%(ep,train_loss))
+                        print("开始进行validation")
+                        print("test set")
+                        calculate_test_val(test_loader,mode="test",logging=True)
+
+                        # print("validation set (human)")
+
+                        # calculate_test_val(val_loader,mode="validation")#,logging=True)
+
+                    print(predictions_outside)
+
+                    # for i in range(len(predictions_outside[0])):
+                    #     pred_arr = [np.array(prediction[i]) for prediction in predictions_outside]
+                    #     binary_array_to_graph(pred_arr, rounded=False)
+                    # calculate_test_val(val_loader,logging=True,mode='validate')
+                    torch.save(model.state_dict(),"models/"+runname+' model')
+                # for i in range(len(predictions[0])):  # go through every GT, and permute it so it fits with the pred
+                #     number_objects = int(len(predictions[0][0]) / 19)
+                #     gt = predictions[0][i].reshape(number_objects, 19)
+                #
+                #     last_row = predictions[-1][i].reshape(number_objects, 19)
+                #     gt = torch.from_numpy(gt)
+                #     last_row = torch.from_numpy(last_row)
+                #     gt = gt.unsqueeze(0)
+                #     last_row = last_row.unsqueeze(0)
+                #     last_row = last_row.permute(0, 2, 1)
+                #     gt = gt.permute(0, 2, 1)
+                #
+                #     gt_o, last_row_o = outer(gt, last_row)
+                #
+                #     # squared_error shape :: (n, s, s)
+                #     squared_error = F.smooth_l1_loss(gt_o.float(), last_row_o.float().expand_as(gt_o), reduction="none").mean(1)
+                #
+                #     squared_error_np = squared_error.cpu().numpy()
+                #     # indices = map(hungarian_loss_per_sample, squared_error_np)
+                #     # losses = [
+                #     #     sample[row_idx, col_idx].mean()
+                #     #     for sample, (row_idx, col_idx) in zip(squared_error, indices)
+                #     # ]
+                #
+                #     indices = hungarian_loss_per_sample(squared_error_np[0])  # indices how to swap the array
+                #     gt = gt.permute(0, 2, 1)
+                #
+                #     gt = gt.squeeze()
+                #     gt[np.array(range(4))] = gt[indices[1]]
+                #     predictions[0][i] = gt.reshape(76).numpy()
+                #
+
+                # binary_array_to_graph(pred_arr, rounded=True)
+
+                # valid_dataset = data_helpers.get_valid_df()
+    '''
+                predictions, average_precision_arr = calculate_test_val(val_loader, mode="validation")
+                ind_largest = np.argpartition(average_precision_arr, -5)[-5:]
+                ind_smallest = np.argpartition(average_precision_arr, 5)[:5]
+                print("best 5")
+                for i in ind_largest:  # range(len(predictions)):
+                    number_objects = int(len(predictions[0]) / 19)
+                    objects = [0] * len(predictions[0])
+                    for l, obj in enumerate(valid_dataset[i]['catgy']):
+                        for index in obj:
+                            objects[l * 19 + index] = 1
+                    objects = np.array(objects).reshape(number_objects, 19)
+                    pred_objects_arr = predictions[i].reshape(number_objects, 19)
+    
+                    epsilon = 0.4
+                    described_objects = [[a for a, b in zip(things, objects[i]) if b] for i in range(number_objects)]
+                    pred_objects = [[a for a, b in zip(things, pred_objects_arr[i]) if b > epsilon] for i in
+                                    range(number_objects)]
+                    print(f"ap: {average_precision_arr[i]}")
+                    print("--------------")
+                    print(valid_dataset[i]['text'])
+                    print(described_objects)
+                    print(pred_objects
+                          )
+                    print("--------------")
+                    pred_arr = [objects.reshape(arr_length), predictions[i].numpy().reshape(arr_length)]
+                    binary_array_to_graph(pred_arr, title=valid_dataset[i]['text'], rounded=False)
+                print("worst 5")
+                for i in ind_smallest:  # range(len(predictions)):
+                    number_objects = int(len(predictions[0]) / 19)
+                    objects = [0] * len(predictions[0])
+                    for l, obj in enumerate(valid_dataset[i]['catgy']):
+                        for index in obj:
+                            objects[l * 19 + index] = 1
+                    objects = np.array(objects).reshape(number_objects, 19)
+                    pred_objects_arr = predictions[i].reshape(number_objects, 19)
+    
+                    epsilon = 0.4
+                    described_objects = [[a for a, b in zip(things, objects[i]) if b] for i in range(number_objects)]
+                    pred_objects = [[a for a, b in zip(things, pred_objects_arr[i]) if b > epsilon] for i in
+                                    range(number_objects)]
+                    print(f"ap: {average_precision_arr[i]}")
+                    print("--------------")
+                    print(valid_dataset[i]['text'])
+                    print(described_objects)
+                    print(pred_objects
+                          )
+                    print("--------------")
+                    pred_arr = [objects.reshape(arr_length), predictions[i].numpy().reshape(arr_length)]
+                    binary_array_to_graph(pred_arr, title=valid_dataset[i]['text'], rounded=False)
+            #
+                # for i in range(len(predictions[0])):
+                #     number_objects = int(len(predictions[0][0]) / 19)
+                #     objects = predictions[0][i].reshape(number_objects, 19)
+                #     pred_objects = predictions[-1][i].reshape(number_objects, 19)
+                #
+                #     described_objects = [[a for a, b in zip(things, objects[i]) if b] for i in range(number_objects)]
+    
+    
+    '''
+        #
+        #     print()
+
+
+
+
+        # summary(model,(64,99))

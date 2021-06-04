@@ -10,6 +10,9 @@ from collections import Counter
 from nltk.corpus import stopwords
 from tqdm import tqdm
 import ast
+
+from hybrid_xml import arr_length
+
 cachedStopWords = stopwords.words("english")
 import pandas as pd
 from sklearn.model_selection import train_test_split
@@ -79,9 +82,10 @@ def load_data_and_labels(data):
             row_idx.append(i)
             col_idx.append(y)
             val_idx.append(1)
+
     m = max(row_idx) + 1
     n = max(col_idx) + 1
-    n= 76 # TODO: make this adaptive
+    n= arr_length # TODO: make this adaptive
     # n = max([max(x) for x in col_idx])
     Y = sp.csr_matrix((val_idx, (row_idx, col_idx)), shape=(m, n))
     # Y = col_idx
@@ -89,6 +93,27 @@ def load_data_and_labels(data):
     return [x_text, Y]
 
 
+def load_data_and_labels_n(data):
+    x_text = [clean_str(doc['text']) for doc in data]
+    x_text = [s.split(" ") for s in x_text]
+    labels = [doc['catgy'] for doc in data]
+
+    row_idx, col_idx, val_idx = [], [], []
+    for i in tqdm(range(len(labels))):
+        l_list = list(set(labels[i][0]))  # remove duplicate cateories to avoid double count
+        for y in l_list:
+            row_idx.append(i)
+            col_idx.append(y)
+            val_idx.append(1)
+
+    m = max(row_idx) + 1
+    n = max(col_idx) + 1
+    n = arr_length  # TODO: make this adaptive
+    # n = max([max(x) for x in col_idx])
+    Y = sp.csr_matrix((val_idx, (row_idx, col_idx)), shape=(m, n))
+    # Y = col_idx
+
+    return [x_text, Y]
 def build_vocab(sentences, vocab_size=50000):
     word_counts = Counter(itertools.chain(*sentences))
     vocabulary_inv = [x[0] for x in word_counts.most_common(vocab_size)]
@@ -109,18 +134,24 @@ def build_input_data(sentences, vocabulary):
 
 def get_valid_df():
     test_data = []
-    elements = requests.get(
-        "https://api.baserow.io/api/database/rows/table/17789/",
-        headers={
-            "Authorization": "Token RGCVcpkyOlPeEpsfLg0z2zjaG6TyUbGx"
-        }
-    )
-    data = elements.json()
+    #elements = requests.get(
+    #     "https://api.baserow.io/api/database/rows/table/17789/",
+    #     headers={
+    #         "Authorization": "Token RGCVcpkyOlPeEpsfLg0z2zjaG6TyUbGx"
+    #     }
+    # )
+    #data = elements.json()
+    f = open("dataset_baserow.json", "r")
+    data = json.loads(f.read())
+
     for element in data['results']:
         filename = element['field_93157'].split(':')[0]
         inner_data = ast.literal_eval(element['field_93158'])
         description = inner_data['description']
         if len(description)<10 or 'computational'  in description:
+            continue
+
+        if True in [description in dicti.values() for dicti in test_data]:
             continue
         given_exp = ast.literal_eval(inner_data['given_exp'])
         if len(given_exp[1])==18:
@@ -128,6 +159,7 @@ def get_valid_df():
         true_exp = ast.literal_eval(inner_data['true_exp'])[1]
         categories = []
         for obj in true_exp:
+            obj = obj + [True]
             categories.append([i for i, x in enumerate(obj) if x])
 
         test_data.append({'text':description,'Id':filename,'split':'val',
@@ -142,7 +174,8 @@ def get_valid_df():
 def load_data(data_path, max_length=500, vocab_size=50000, split=0):
     with open(os.path.join(data_path), 'rb') as fin:
         # load data
-        df = pd.read_json("../MasterThesis/one_to_4_25noise_shuffled order.json")
+        # df = pd.read_json("../MasterThesis/one_to_4_25noise_shuffled order.json")
+        df = pd.read_json(data_path)
         # df = pd.read_json("../MasterThesis/two_objects.json")
         # df = pd.read_json("../MasterThesis/edited_files/all_edited.json")
 
@@ -198,7 +231,6 @@ def load_data(data_path, max_length=500, vocab_size=50000, split=0):
     trn_sents_padded = pad_sentences(trn_sents, max_length=max_length)
     tst_sents_padded = pad_sentences(tst_sents, max_length=max_length)
     val_sents_padded = pad_sentences(val_sents, max_length=max_length)
-
     print("len:", len(trn_sents_padded), len(tst_sents_padded))
     vocabulary, vocabulary_inv = build_vocab(trn_sents_padded + tst_sents_padded+val_sents_padded, vocab_size=vocab_size)
     X_trn = build_input_data(trn_sents_padded, vocabulary)
@@ -206,21 +238,59 @@ def load_data(data_path, max_length=500, vocab_size=50000, split=0):
     X_val = build_input_data(val_sents_padded, vocabulary)
     return X_trn, Y_trn, X_tst, Y_tst, X_val,Y_val, vocabulary, vocabulary_inv
 
-
-def load_data_n(data_path, max_length=500, vocab_size=50000):
-    # Load and preprocess data
+def load_data_2_obj(data_path, max_length=500, vocab_size=50000, split=0):
     with open(os.path.join(data_path), 'rb') as fin:
-        #         [train, test, vocab, catgy] = pickle.load(fin)
-        [train, test, vocab, catgy] = pickle.load(fin, encoding='latin1')
-    # dirty trick to prevent errors happen when test is empty
+        # load data
+        df = pd.read_json(data_path)
+
+    df.head()
+    df['labels'] = df[df.columns[2:]].values.tolist()
+    new_df = df[['description', 'solution_matrix', 'file_name']].copy()
+    new_df.head()
+    #  [train, test, vocab, catgy] =  []
+    # split train_val and test
+    sss = ShuffleSplit(n_splits=5, test_size=0.3, random_state=52)
+
+    splits = [(train, test) for train, test in sss.split(new_df.description, new_df.solution_matrix)]
+    train_val_index, test_index = splits[split]
+
+    splits = [(train, test) for train, test in sss.split(new_df.description.iloc[train_val_index],
+                                                         new_df.solution_matrix.iloc[train_val_index])]
+
+    tmp_idx_train, tmp_idx_val = splits[0]
+    train_index = train_val_index[tmp_idx_train]
+
+    train_df = new_df.iloc[train_index].reset_index(drop=True)
+    test_df = new_df.iloc[test_index].reset_index(drop=True)
+
+    train = []
+    test = []
+    for index, row in train_df.iterrows():
+        # categories = [i for i, x in enumerate(row['solution_matrix']) if x]
+        categories = []
+        for obj in row['solution_matrix']:
+            categories.append([i for i, x in enumerate(obj) if x])
+        train.append({'split': 'train', 'text': row['description'], 'Id': row['file_name'], 'catgy': categories,
+                      'num_words': len(row['description'])})
+    for index, row in test_df.iterrows():
+        categories = []
+        for obj in row['solution_matrix']:
+            categories.append([i for i, x in enumerate(obj) if x])
+
+        test.append(
+            {'split': 'test', 'text': row['description'], 'Id': row['file_name'], 'catgy': categories,
+             'num_words': len(row['description'])})
+
     if len(test) == 0:
         test[:5] = train[:5]
-    print('1.1')
-    trn_sents, Y_trn = load_data_and_labels(train)
-    print('1.2')
+    if arr_length>18:
+        trn_sents, Y_trn = load_data_and_labels(train)
+        tst_sents, Y_tst = load_data_and_labels(test)
+    else:
+        trn_sents, Y_trn = load_data_and_labels_n(train)
+        tst_sents, Y_tst = load_data_and_labels_n(test)
 
-    tst_sents, Y_tst = load_data_and_labels(test)
-    print('1.3')
+
     trn_sents_padded = pad_sentences(trn_sents, max_length=max_length)
     tst_sents_padded = pad_sentences(tst_sents, max_length=max_length)
     print("len:", len(trn_sents_padded), len(tst_sents_padded))
@@ -228,7 +298,59 @@ def load_data_n(data_path, max_length=500, vocab_size=50000):
     X_trn = build_input_data(trn_sents_padded, vocabulary)
     X_tst = build_input_data(tst_sents_padded, vocabulary)
     return X_trn, Y_trn, X_tst, Y_tst, vocabulary, vocabulary_inv
-    # return X_trn, Y_trn, vocabulary, vocabulary_inv
+
+
+# def load_data_n(data_path, max_length=500, vocab_size=50000,split=0):
+#     # Load and preprocess data
+#     with open(os.path.join(data_path), 'rb') as fin:
+#         # df = pd.read_json("../MasterThesis/one_to_4_25noise_shuffled order.json")
+#         df = pd.read_json(data_path)
+#         # df = pd.read_json("../MasterThesis/two_objects.json")
+#         # df = pd.read_json("../MasterThesis/edited_files/all_edited.json")
+#
+#     df.head()
+#     df['labels'] = df[df.columns[2:]].values.tolist()
+#     new_df = df[['description', 'solution_matrix', 'file_name']].copy()
+#     new_df.head()
+#
+#     sss = ShuffleSplit(n_splits=5, test_size=0.3, random_state=5)
+#
+#     splits = [(train, test) for train, test in sss.split(new_df.description, new_df.solution_matrix)]
+#     train_val_index, test_index = splits[split]
+#
+#     train_df = new_df.iloc[train_val_index].reset_index(drop=True)
+#     test_df = new_df.iloc[test_index].reset_index(drop=True)
+#     train =[]
+#     test = []
+#     for index, row in train_df.iterrows():
+#         # categories = [i for i, x in enumerate(row['solution_matrix']) if x]
+#         categories = []
+#         for obj in row['solution_matrix']:
+#             categories.append([i for i, x in enumerate(obj) if x])
+#         train.append({'split': 'train', 'text': row['description'], 'Id': row['file_name'], 'catgy': categories,
+#                       'num_words': len(row['description'])})
+#     for index, row in test_df.iterrows():
+#         categories = []
+#         for obj in row['solution_matrix']:
+#             categories.append([i for i, x in enumerate(obj) if x])
+#
+#         test.append(
+#             {'split': 'test', 'text': row['description'], 'Id': row['file_name'], 'catgy': categories,
+#              'num_words': len(row['description'])})
+#
+#     trn_sents, Y_trn = load_data_and_labels_n(train)
+#     print('1.2')
+#
+#     tst_sents, Y_tst = load_data_and_labels_n(test)
+#     print('1.3')
+#     trn_sents_padded = pad_sentences(trn_sents, max_length=max_length)
+#     tst_sents_padded = pad_sentences(tst_sents, max_length=max_length)
+#     print("len:", len(trn_sents_padded), len(tst_sents_padded))
+#     vocabulary, vocabulary_inv = build_vocab(trn_sents_padded + tst_sents_padded, vocab_size=vocab_size)
+#     X_trn = build_input_data(trn_sents_padded, vocabulary)
+#     X_tst = build_input_data(tst_sents_padded, vocabulary)
+#     return X_trn, Y_trn, X_tst, Y_tst, vocabulary, vocabulary_inv
+#     # return X_trn, Y_trn, vocabulary, vocabulary_inv
 
 
 def batch_iter(data, batch_size, num_epochs):

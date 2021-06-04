@@ -555,9 +555,9 @@ batch_size=64
 # noises_one_object = [0,0.25,0.5,0.75,1]
 
 noises = [0]#,1,2]#,1,2,3,10]
-lrs = [0.0005]#,0.001]
-arr_length = 38 # 76 for 4 objects
-double_data =[True]
+lrs = [0.0001,0.0005,0.001]#,0.001]
+arr_length = 76 # 76 for 4 objects
+double_data =[False]
 if __name__ == '__main__':
     for doub in double_data :
         if doub:
@@ -570,21 +570,21 @@ if __name__ == '__main__':
                     print('-'*50)
                     print('Loading data...'); start_time = timeit.default_timer()
                     # data_path = '../MasterThesis/one_to_4_objects_shuffled_order '+str(noise) +' noise.json'
-                    # if doub:
-                    #     data_path = '../MasterThesis/simple_description_1_4_4_object_shuffled_order '+str(noise) +' noise.json'
-                    # else:
-                    #     data_path = '../MasterThesis/simple_description_1_4_object_shuffled_order '+str(noise) +' noise.json'
-
-                    # data_path = '../MasterThesis/simple_description_1_object_shuffled_order 0 noise.json'
                     if doub:
-                        data_path = '../MasterThesis/simple_description_2_2_object_shuffled_order 0 noise.json'
+                        data_path = '../MasterThesis/simple_description_1_4_4_object_shuffled_order '+str(noise) +' noise.json'
                     else:
-                        data_path = '../MasterThesis/simple_description_2_object_shuffled_order 0 noise.json'
+                        data_path = '../MasterThesis/simple_description_1_4_object_shuffled_order '+str(noise) +' noise.json'
+                    #
+                    # data_path = '../MasterThesis/simple_description_1_object_shuffled_order 0 noise.json'
+                    # if doub:
+                    #     data_path = '../MasterThesis/simple_description_2_2_object_shuffled_order 0 noise.json'
+                    # else:
+                    #     data_path = '../MasterThesis/simple_description_2_object_shuffled_order 0 noise.json'
 
                     # data_path = '../MasterThesis/2_objects_shuffled_order 0 noise.json'
                     # data_path = '../MasterThesis/oneobject_shuffled_order nonoise.json'
-                    # train_loader, test_loader, val_loader, vocabulary, X_tst, Y_tst, X_trn,Y_trn, X_val, Y_val= load_data(data_path,sequence_length,vocab_size,batch_size,split=i)
-                    train_loader, test_loader,  vocabulary, X_tst, Y_tst, X_trn,Y_trn = load_data_2(data_path,sequence_length,vocab_size,batch_size,split=i)
+                    train_loader, test_loader, val_loader, vocabulary, X_tst, Y_tst, X_trn,Y_trn, X_val, Y_val= load_data(data_path,sequence_length,vocab_size,batch_size,split=i)
+                    # train_loader, test_loader,  vocabulary, X_tst, Y_tst, X_trn,Y_trn = load_data_2(data_path,sequence_length,vocab_size,batch_size,split=i)
                     print('Process time %.3f (secs)\n' % (timeit.default_timer() - start_time))
                     predictions_outside = []
                     # load glove
@@ -664,7 +664,7 @@ if __name__ == '__main__':
 
                         # print("validation set (human)")
 
-                        # calculate_test_val(val_loader,mode="validation")#,logging=True)
+                        calculate_test_val(val_loader,mode="validation")#,logging=True)
 
                     print(predictions_outside)
 
